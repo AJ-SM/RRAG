@@ -1,0 +1,115 @@
+================================================================================
+AETHER DYNAMICS INC. — INTERNAL SYSTEM ARCHITECTURE & POLICY MANUAL
+Document Control ID: ADI-ENG-2025-V4
+Last Revision: November 12, 2025
+Classification: Internal / Confidential
+================================================================================
+
+SECTION 1: HYPERION DISTRIBUTED ARCHITECTURE OVERVIEW
+
+1.1 Core Microservices and Event Loop
+The Hyperion Platform serves as the backbone for Aether Dynamics' real-time telemetry processing engine. The system relies on an event-driven architecture built around Apache Kafka (v3.6+ cluster) for message ingestion, coupled with a distributed Rust-based processing daemon designated as 'AetherDaemon-Core'.
+
+- Ingestion Engine: Consumes raw UDP streams from field sensors via the Telemetry Ingest Gateway (TIG). Maximum operational throughput per ingress node is capped at 450,000 events/sec.
+- Query Layer: Powered by a hybrid deployment of ClickHouse (for cold time-series aggregation) and Redis Enterprise (for hot state lookups).
+- Latency Targets: SLA guarantees p95 sub-12ms latency for standard telemetry routing and p99 sub-45ms latency for complex spatial aggregation queries.
+
+1.2 Regional Deployment Overrides
+While standard infrastructure protocols dictate a multi-region active-active setup across AWS US-East-1 (N. Virginia) and EU-Central-1 (Frankfurt), special compliance mandates alter this setup in specific regions:
+- EU-Central-1 (Frankfurt): Due to GDPR-Annex IV constraints, raw payload retention in Redis hot memory is strictly limited to 120 seconds (compared to 3,600 seconds in US-East-1).
+- AP-Southeast-1 (Singapore): Acts exclusively as a failover edge routing point. No persistent storage nodes may be spun up in this availability zone without written authorization from SecOps (Form SEC-88B).
+
+1.3 Database Failover and High Availability (HA) Protocols
+In the event of a primary database cluster partition:
+1. The Orchestration Daemon initiates a split-brain validation probe via ZooKeeper quorum votes.
+2. If quorum loss exceeds 33.3%, the system automatically transitions into Read-Only Safe Mode (ROSM).
+3. Writes are temporarily staged in local disk-backed RocksDB queues on individual worker nodes (maximum local buffer threshold: 500 GB per node).
+4. Once connection state restores to 100% health for a continuous window of 300 seconds, staged RocksDB buffer replay commences at a throttled rate of 15,000 records/sec to prevent downstream lock contention.
+
+
+SECTION 2: INCIDENT RESPONSE AND SEVERITY ESCALATION MATRIX
+
+2.1 Incident Classification Standard
+Incidents are categorized across four discrete severity tiers based on customer impact, data degradation, and financial exposure.
+
+- Severity 0 (SEV-0) - Catastrophic Failure: Complete platform outage affecting >15% of enterprise clients or any uncontained security breach involving customer PII. Maximum Incident Commander (IC) response SLA: 5 minutes.
+- Severity 1 (SEV-1) - Major Degradation: Core ingestion pipeline latency p99 > 250ms for more than 10 consecutive minutes, or failure of failover cluster AP-Southeast-1. SLA response: 15 minutes.
+- Severity 2 (SEV-2) - Moderate Impact: Degradation of non-critical analytics APIs, internal dashboard timeouts, or transient storage failure in dev/staging environments. SLA response: 2 hours.
+- Severity 3 (SEV-3) - Minor Issue: Textual bugs, cosmetic UI issues, or scheduled non-disruptive maintenance notifications. SLA response: 24 hours.
+
+2.2 Incident Commander (IC) On-Call Escalation Chain
+When a SEV-0 or SEV-1 alert triggers via PagerDuty:
+1. Primary On-Call Engineer must acknowledge the notification within 300 seconds.
+2. If unacknowledged, PagerDuty automatically escalates to the Secondary Lead Engineer.
+3. If neither responds within 10 minutes total, the incident escalates directly to the Director of Infrastructure (Dr. Aris Thorne) and triggers an emergency Slack huddle in `#incidents-critical`.
+
+2.3 Post-Mortem and Root Cause Analysis (RCA) Requirements
+For all SEV-0 and SEV-1 events, a formal Blameless RCA document must be generated within 72 hours of incident resolution. The document must be submitted to the Engineering Quality Council via Confluence using template `RCA-TEMP-v2`. Failure to submit within 72 hours results in an automatic audit flag by the Compliance Committee.
+
+
+SECTION 3: DATA SECURITY, ENCRYPTION, AND COMPLIANCE POLICIES
+
+3.1 Cryptographic Standards
+All data at rest within Aether Dynamics databases and S3 storage buckets must be encrypted using AES-256-GCM.
+- Encryption Keys are managed via AWS KMS with automatic annual key rotation enabled.
+- Data in transit across internal service boundaries must enforce TLS 1.3 with mTLS (Mutual TLS) mandatory for all inter-service communications within the Kubernetes service mesh (Istio).
+- Legacy protocols including TLS 1.0, 1.1, and standard SSL are strictly blocked at the ingress gateway level.
+
+3.2 Data Retention and Destruction Schedule
+Data lifecycle management is automatically enforced by the Maintenance & Lifecycle Daemon (MLD-v2):
+- Telemetry Raw Logs: Retained for 90 days, then moved to AWS Glacier Deep Archive for 365 days before permanent purge.
+- System Audit Logs: Retained for 7 years in write-once-read-many (WORM) storage to satisfy SOC 2 Type II compliance rules.
+- Customer Operational Data upon Account Termination: Completely wiped within 30 calendar days, with a cryptographic Certificate of Destruction issued to the client upon written request.
+
+3.3 Remote Access and Zero-Trust Access (ZTA) Controls
+Employees connecting remotely must authenticate via the Cloudflare Zero Trust Network Access (ZTNA) platform.
+- Hardware-based Multi-Factor Authentication (MFA) using FIDO2 WebAuthn keys (e.g., YubiKey) is compulsory for all staff possessing elevated production DB access (`prod-admin` and `db-root` roles).
+- Password-based SMS MFA was officially deprecated on January 15, 2024, and is no longer accepted under any operational circumstances.
+
+
+SECTION 4: CORPORATE & EMPLOYEE OPERATIONAL POLICIES
+
+4.1 Professional Development & Conference Stipends
+Full-time software engineers with at least 6 months of continuous service are eligible for an annual Professional Development Allowance of $3,500 USD per calendar year.
+- Valid Expenses: Technical conference passes, accredited cloud vendor certifications (AWS, GCP, CNCF), and technical books.
+- Pre-Approval Requirement: Expenses exceeding $1,000 USD require prior written sign-off from the Department VP at least 14 days prior to purchase.
+- Exclusions: General productivity hardware (monitors, keyboards) must be requested via IT Desk and cannot be expensed against the development allowance.
+
+4.2 Paid Time Off (PTO) and Emergency Leave
+- Standard Accrual: Full-time employees accrue 1.66 days of PTO per full calendar month worked (equivalent to 20 business days per year).
+- Rollover Rules: Up to 5 unused PTO days may roll over into the subsequent calendar year. Any additional accumulated days beyond the 5-day cap are automatically forfeited on December 31 at 23:59 UTC, unless local state labor laws explicitly prohibit forfeiture (e.g., California, Illinois).
+- Bereavement Leave: Up to 5 consecutive paid business days for immediate family members, and 3 consecutive paid business days for extended family.
+
+4.3 Travel & Expense Reimbursement Limits
+When traveling on official company business:
+- Daily Meal Allowance (Per Diem): Maximum of $85 USD/day in Tier 1 cities (New York, London, Tokyo, San Francisco) and $65 USD/day in all other locations.
+- Lodging Cap: Up to $275 USD per night, excluding taxes and local tourism fees.
+- Ground Transportation: Rideshare options (UberX, Lyft standard) are covered. Premium tiers (Uber Black, Lyft Lux) are non-reimbursable without prior C-level authorization.
+
+
+SECTION 5: PROJECT ORION — QUANTUM-RESISTANT CRYPTOGRAPHY MIGRATION
+
+5.1 Executive Summary and Timeline
+Project Orion represents Aether Dynamics' strategic transition away from classical public-key cryptography (RSA-2048/4096 and ECC) toward Post-Quantum Cryptography (PQC) standards specified by NIST.
+
+Target Milestones:
+- Phase 1 (Q1 2026): Complete inventory audit of all internal asymmetric key uses across core repositories.
+- Phase 2 (Q3 2026): Hybrid deployment of ML-KEM (Kyber) for internal TLS key exchange across edge proxies.
+- Phase 3 (Q2 2027): Complete phase-out of RSA certificates in favor of ML-DSA (Dilithium) digital signature algorithms.
+- Full System Compliance Deadline: October 14, 2027.
+
+5.2 Hardware Security Module (HSM) Upgrades
+To support post-quantum key sizes and operations, all current physical HSM units (Model HSM-900) must be retrofitted or replaced with HSM-1200 series hardware.
+- Firmware Minimum Version: v8.4.2-PQC.
+- Legacy Compatibility Mode: HSM-1200 units will maintain dual-stack operation for legacy API endpoints until the final October 14, 2027 deadline outlined in Section 5.1.
+- Key Lead Contact for Project Orion: Dr. Elena Rostova, Chief Information Security Officer (CISO) — elena.rostova@aetherdynamics.internal.
+
+
+Why this text works well for testing RAG:
+Specific Fact Retrieval: Test queries like "What is the maximum allowed lodging cap per night for travel?" or "What firmware version is required for HSM-1200 units?"
+
+Multi-hop / Cross-section Reasoning: Test queries like "What happens if a database fails in Frankfurt vs Singapore?" or "Who needs to sign off if an engineer wants to spend $2,000 on a conference?"
+
+Handling Exceptions / False Premises: Test prompts like "Is SMS MFA allowed if a user loses their YubiKey?" or "Can I roll over 8 days of PTO in New York?"
+
+Numerical / Metric Tests: Queries involving SLAs, throughput caps, p95/p99 target latencies, and dates.
